@@ -1,0 +1,78 @@
+# AI Builder — APK build pipeline issues (simulation report)
+# Source: AIBuilder-Expo-v158 → fixes applied → v160
+# Simulations: create-from-scratch, zip/source assemble, REUSE, Expo path, release task
+
+## CRITICAL (fixed)
+
+### 1. Missing android.aapt2FromMavenOverride in create-from-scratch path
+- File: lib/agent-engine.ts → buildDeterministicCreateAppScript
+- Symptom: Permission denied on aapt2 during resource linking / transforms on Termux (GRADLE cache or extracted aapt2 lands on noexec /storage).
+- Root: Generated gradle.properties never set the override; user-script path (apk-build-engine) did, autonomous create-app did not.
+- Fix: Write android.aapt2FromMavenOverride=$AAPT2 on fresh scaffold; on every run (including REUSE) refresh/append the property; also pass -Pandroid.aapt2FromMavenOverride on gradlew CLI.
+
+### 2. Missing aapt2 override in zip/source autonomous assemble
+- File: lib/termux-agent.ts → apkRunAssemble
+- Symptom: Same aapt2 Permission denied for projects coming from ZIP/directory.
+- Root: prepare only logged runtime_aapt2; assemble command never passed -P or wrote the property (policy: do not rewrite project gradle.properties).
+- Fix: Detect AAPT2 from SDK and pass -Pandroid.aapt2FromMavenOverride=$AAPT2 on every gradlew invocation.
+
+### 3. Missing aapt2 override in build-loop
+- File: lib/build-loop.ts → buildCommand
+- Same root cause for the recovery/build-loop path.
+- Fix: identical -P injection.
+
+### 4. Too low Gradle heap in deterministic create-app
+- File: lib/agent-engine.ts
+- Symptom: OOM / GC thrashing or incomplete builds on mid-range phones; project-generator already used 2048m.
+- Root: Hardcoded -Xmx512m in both gradle.properties and gradlew CLI.
+- Fix: Raised to -Xmx1536m -XX:MaxMetaspaceSize=384m (aligned with termux-agent / build-loop).
+
+## MEDIUM (documented / partial)
+
+### 5. content:// URIs from share intents
+- extractProjectPathFromTask returns null for content:// (Termux cannot unzip them directly).
+- Behaviour: falls through to LLM free-form which may invent a path.
+- Mitigation already present: upper layers ask user for real /storage path. No silent invent of content://.
+- Recommendation: keep null; UI already guides user to copy ZIP to Download/.
+
+### 6. Offline-first then online for native projects
+- Offline assemble fails if Gradle distribution not yet in GRADLE_USER_HOME → online fallback.
+- Expo always skips offline (SKIP_OFFLINE_EXPO). Correct.
+- Edge: first create-app after clean Termux still needs network for gradle-8.2-bin.zip and AGP.
+
+### 7. REUSE path preserves old gradle.properties
+- Intentionally does not wipe sources (1.7.8).
+- After fix #1 the aapt2 line is still injected/updated on every run without wiping user customizations.
+
+### 8. Release / AAB tasks
+- assembleTask detection works (assembleRelease / bundleRelease).
+- Signing still uses debug keystore → release APK is debug-signed. Acceptable for device install; production keystore is out of scope for autonomous path.
+
+### 9. Expo SettingsManager.kt sed patch
+- Fragile across expo-autolinking versions. Already soft-fail (|| true). Monitor if Unresolved reference extra reappears.
+
+### 10. Empty dependencies {} in create-app Hello-World template
+- Fine for pure Activity + layout. Follow-up refine ("добавь кнопку") is expected to edit sources via agent.
+
+## LOW / already hardened
+
+- Download ↔ Загрузки alternate path (v158).
+- file:// decode (v158).
+- Newest APK by mtime after assemble (1.7.9).
+- Wrapper jar restore from toolpack / find / gradle wrapper / curl.
+- BUILD_LOCK with stale cleanup.
+- Soft unsigned APK delivery when apksigner fails.
+- PREPARE_OK gate + repair agent loop.
+
+## Simulation matrix executed
+
+1. «Создай Hello World APK» → deterministic scaffold + assemble (aapt2 + heap fixed).
+2. «Создай таймер» / soft product → same path via isStrongCreateAppTask.
+3. «Собери APK из /storage/emulated/0/Download/foo.zip» → prepare + offline/online + collect (aapt2 fixed).
+4. «Собери APK из /sdcard/MyApp» (directory) → same.
+5. «Собери release APK» → assembleRelease detection.
+6. REUSE existing project → aapt2 refresh without wipe.
+7. Expo ZIP → prebuild path + SKIP_OFFLINE.
+8. content:// share → null path, user asked for real path.
+
+All critical aapt2 / heap issues fixed in source. Compilation settings of the host Expo project were not touched.
