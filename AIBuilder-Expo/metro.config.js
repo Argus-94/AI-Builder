@@ -1,15 +1,20 @@
 const { getDefaultConfig } = require("expo/metro-config");
 
 const config = getDefaultConfig(__dirname);
-config.resolver.disableHierarchicalLookup = false;
-config.watchFolders = [__dirname];
 
-// Ensure agent-tool modules under lib/ are never blocked by a broad **/build/**
-// pattern from tooling or future Expo defaults.
-const prev = config.resolver.blockList;
-if (prev) {
-  const list = Array.isArray(prev) ? prev : [prev];
-  config.resolver.blockList = list;
-}
+config.watchFolders = [__dirname];
+config.resolver = {
+  ...config.resolver,
+  disableHierarchicalLookup: false,
+  blockList: [
+    ...(Array.isArray(config.resolver?.blockList)
+      ? config.resolver.blockList
+      : config.resolver?.blockList
+        ? [config.resolver.blockList]
+        : []),
+    /\/node_modules\/.+\/build\//,
+    /\/\.expo\/.*\//,
+  ],
+};
 
 module.exports = config;
