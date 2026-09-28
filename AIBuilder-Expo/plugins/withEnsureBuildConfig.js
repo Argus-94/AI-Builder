@@ -9,10 +9,11 @@ const path = require("path");
  *
  * Плагин намеренно работает как dangerous mod: CBE запускает prebuild --clean,
  * поэтому правки применяются к свежесгенерированному проекту на каждой сборке.
+ * 
+ * Защита от дублирования: проверяем наличие каждого флага перед вставкой.
  */
 function withEnsureBuildConfig(config) {
   const androidPackage = config.android?.package || "com.sakana.aibuilder";
-  const packagePattern = androidPackage.replace(/\./g, "\\.");
 
   return withDangerousMod(config, ["android", async (config) => {
     const root = config.modRequest.platformProjectRoot;
@@ -20,76 +21,81 @@ function withEnsureBuildConfig(config) {
 
     if (fs.existsSync(buildGradlePath)) {
       let text = fs.readFileSync(buildGradlePath, "utf8");
+      let modified = false;
 
-      // AGP 8 не генерирует BuildConfig без явного флага.
+      // AGP 8+ требует явного buildConfig true
       if (!/buildFeatures\s*\{[\s\S]*?\bbuildConfig\s+true\b/.test(text)) {
         if (/buildFeatures\s*\{/.test(text)) {
-          text = text.replace(/buildFeatures\s*\{/, (match) =>
-            `${match}\n        buildConfig true`
-          );
-        } else {
-          text = text.replace(/android\s*\{/, (match) =>
-            `${match}\n    buildFeatures {\n        buildConfig true\n    }`
-          );
+          text = text.replace(/buildFeatures\s*\{/, (match) => `${match}\n        buildConfig true`);
+        } else if (/android\s*\{/.test(text)) {
+          text = text.replace(/android\s*\{/, (match) => `${match}\n    buildFeatures {\n        buildConfig true\n    }`);
         }
+        modified = true;
       }
 
-      // Expo SDK 54 создаёт Groovy build.gradle. Учитываем также возможные
-      // варианты с двоеточием/равно, чтобы не получить дубли при повторном mod.
+      // Синхронизируем namespace (один раз)
       if (/namespace\s*(?:=\s*)?["'][^"']+["']/.test(text)) {
-        text = text.replace(
-          /namespace\s*(?:=\s*)?["'][^"']+["']/, 
-          `namespace "${androidPackage}"`
-        );
-      } else {
-        text = text.replace(/android\s*\{/, (match) =>
-          `${match}\n    namespace "${androidPackage}"`
-        );
+        const oldLen = text.length;
+        text = text.replace(/namespace\s*(?:=\s*)?["'][^"']+["']/, `namespace "${androidPackage}"`);
+        if (text.length !== oldLen) modified = true;
+      } else if (/android\s*\{/.test(text)) {
+        const oldLen = text.length;
+        text = text.replace(/android\s*\{/, (match) => `${match}\n    namespace "${androidPackage}"`);
+        if (text.length !== oldLen) modified = true;
       }
 
-      if (/applicationId\s*(?:=\s*)?["'][^"']+["']/.test(text)) {
+      // Синхронизируем applicationId (один раз)
+      if (/defaultConfig\s*\{[\s\S]*?applicationId\s+["'][^"']+["']/.test(text)) {
+        const oldLen = text.length;
         text = text.replace(
-          /applicationId\s*(?:=\s*)?["'][^"']+["']/, 
+          /applicationId\s+["'][^"']+["']/,
           `applicationId "${androidPackage}"`
         );
-      } else {
-        text = text.replace(/defaultConfig\s*\{/, (match) =>
-          `${match}\n        applicationId "${androidPackage}"`
-        );
+        if (text.length !== oldLen) modified = true;
+      } else if (/defaultConfig\s*\{/.test(text)) {
+        const oldLen = text.length;
+        text = text.replace(/defaultConfig\s*\{/, (match) => `${match}\n        applicationId "${androidPackage}"`);
+        if (text.length !== oldLen) modified = true;
       }
 
-      // Гарантируем сборку автономного APK без Metro (встраивание JS бандла в debug)
-      if (!/debuggableVariants\s*=\s*\[\s*\]/.test(text)) {
-        if (/react\s*\{/.test(text)) {
-          text = text.replace(/react\s*\{/, "react {\n    debuggableVariants = []");
-        }
+      // Отключаем встраивание JS бандла в debug (для standalone APK)
+      if (!/debuggableVariants\s*=\s*\[\s*\]/.test(text) && /react\s*\{/.test(text)) {
+        const oldLen = text.length;
+        text = text.replace(/react\s*\{/, "react {\n        debuggableVariants = []");
+        if (text.length !== oldLen) modified = true;
       }
 
-      fs.writeFileSync(buildGradlePath, text, "utf8");
+      if (modified) {
+        fs.writeFileSync(buildGradlePath, text, "utf8");
+      }
     }
 
-    // Sync package directive with android.package for app sources.
-    // CRITICAL: Kotlin uses `package x` (no semicolon); Java requires `package x;`.
-    // Previous versions rewrote BOTH as Kotlin-style and broke javac on any .java
-    // (e.g. AibAccelNative.java → "error: ';' expected").
+    // Синхронизируем package директивы в .java и .kt файлах (КРИТИЧНО для AGP 8+)
     const javaRoot = path.join(root, "app", "src", "main", "java");
     if (fs.existsSync(javaRoot)) {
       const walk = (dir) => {
-        for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
-          const fullPath = path.join(dir, entry.name);
-          if (entry.isDirectory()) walk(fullPath);
-          else if (/\.(kt|java)$/.test(entry.name)) {
-            let source = fs.readFileSync(fullPath, "utf8");
-            if (!/^package\s+/m.test(source)) continue;
-            const isJava = entry.name.endsWith(".java");
-            const packageLine = isJava
-              ? ("package " + androidPackage + ";")
-              : ("package " + androidPackage);
-            const next = source.replace(/^package\s+[^\r\n]+/m, packageLine);
-            if (next !== source) {
-              fs.writeFileSync(fullPath, next, "utf8");
+        try {
+          for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+            const fullPath = path.join(dir, entry.name);
+            if (entry.isDirectory()) {
+              walk(fullPath);
+            } else if (/\.(kt|java)$/.test(entry.name)) {
+              let source = fs.readFileSync(fullPath, "utf8");
+              if (!/^package\s+/m.test(source)) continue;
+              
+              const isJava = entry.name.endsWith(".java");
+              const packageLine = isJava
+                ? `package ${androidPackage};`
+                : `package ${androidPackage}`;
+              
+              const next = source.replace(/^package\s+[^\r\n;]+;?/m, packageLine);
+              if (next !== source) {
+                fs.writeFileSync(fullPath, next, "utf8");
+              }
             }
           }
+        } catch (e) {
+          console.warn(`[withEnsureBuildConfig] Warning while walking ${dir}: ${e.message}`);
         }
       };
       walk(javaRoot);
