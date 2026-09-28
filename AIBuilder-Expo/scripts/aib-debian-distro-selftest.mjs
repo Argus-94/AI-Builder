@@ -1,0 +1,20 @@
+#!/usr/bin/env node
+import assert from "node:assert/strict";
+import fs from "node:fs";
+import path from "path";
+import { fileURLToPath } from "node:url";
+const root = path.resolve(fileURLToPath(new URL("..", import.meta.url)));
+const distro = fs.readFileSync(path.join(root, "lib/debian-distro.ts"), "utf8");
+assert.match(distro, /bootstrapDebian/);
+assert.match(distro, /exportDebian/);
+assert.match(distro, /importDebian/);
+assert.match(distro, /STAGE:/);
+assert.match(distro, /onProgress/);
+assert.doesNotMatch(distro, /eval\(/);
+const ui = fs.readFileSync(path.join(root, "app/runtime.tsx"), "utf8");
+assert.match(ui, /ProgressBar/);
+assert.match(ui, /onDebianExport/);
+assert.match(ui, /onDebianImport/);
+assert.match(ui, /Экспорт \/ импорт Debian|export \/ import/);
+assert.match(ui, /debianProgress/);
+console.log("AIB_DEBIAN_DISTRO_SELFTEST_OK");
