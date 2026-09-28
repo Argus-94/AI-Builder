@@ -1,0 +1,22 @@
+#!/usr/bin/env node
+import assert from "node:assert/strict";
+import fs from "node:fs";
+import path from "path";
+import { fileURLToPath } from "node:url";
+const root = path.resolve(fileURLToPath(new URL("..", import.meta.url)));
+const mgr = fs.readFileSync(path.join(root, "core/backup/BackupManager.ts"), "utf8");
+assert.match(mgr, /async list\(/);
+const ad = fs.readFileSync(path.join(root, "core/backup/TermuxBackupAdapter.ts"), "utf8");
+assert.match(ad, /listChildren/);
+const facade = fs.readFileSync(path.join(root, "core/RuntimeFacade.ts"), "utf8");
+assert.match(facade, /listBackups/);
+const ui = fs.readFileSync(path.join(root, "app/runtime.tsx"), "utf8");
+assert.match(ui, /onBackupVerify/);
+assert.match(ui, /onBackupRefreshList/);
+assert.match(ui, /backupScope/);
+assert.match(ui, /Список бэкапов|Backup list/);
+const mem = fs.readFileSync(path.join(root, "core/backup/MemoryBackupAdapter.ts"), "utf8");
+assert.match(mem, /class MemoryBackupAdapter/);
+assert.match(mem, /async listChildren/);
+assert.ok(mem.indexOf("class MemoryBackupAdapter") < mem.indexOf("async listChildren"));
+console.log("AIB_PHASE_D_BACKUP_SELFTEST_OK");
