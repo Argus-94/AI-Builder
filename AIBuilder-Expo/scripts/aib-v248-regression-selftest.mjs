@@ -1,0 +1,10 @@
+import fs from 'node:fs';
+const packs=fs.readFileSync('lib/termux-packs.ts','utf8');
+const agent=fs.readFileSync('lib/termux-agent.ts','utf8');
+const build=fs.readFileSync('lib/build-loop.ts','utf8');
+const i18n=fs.readFileSync('lib/i18n.ts','utf8');
+const texts=[['packs',packs],['agent',agent],['build',build],['i18n',i18n]];
+const forbidden=[/packages-cf\.termux\.dev\/apt\/termux-main/i,/packages\.termux\.dev\/apt\/termux-main/i,/mirror\.termina\.online/i,/mirrors\.ustc\.edu\.cn/i,/pkg install -y android-sdk/i,/pkg install -y gradle/i,/\|\|\s*gradle\s+assembleDebug/i,/sdkmanager[^\n]*\"platform-tools\"[^\n]*\"platforms;android-34\"/i,/gradle wrapper --gradle-version/i,/npm install -g apk-mitm/i,/pip install\s+-U/i,/r2pm\s+-[Ui]/i];
+for(const [name,text] of texts) for(const re of forbidden) if(re.test(text)) throw new Error(`AIB_V248_FORBIDDEN:${name}:${re}`);
+if(!/verified APK build tool-pack (?:is missing|must provide)/i.test(agent)) throw new Error('AIB_V248_SDK_TOOLPACK_GUARD_MISSING');
+console.log('AIB_V248_REGRESSION_SELFTEST_OK mirror_override=blocked sdk_auto_install=blocked');
