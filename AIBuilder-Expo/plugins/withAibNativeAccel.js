@@ -1,9 +1,8 @@
 /**
- * Open MIT native accelerator for AI Builder (plan Phase G).
+ * Open MIT native accelerator for AI Builder.
  * Injects React Native module NativeModules.AibNativeAccel.
  * Does NOT change gradle.properties / compileSdk / NDK version.
- * Optional C sources under native/aib-native-accel are copied for future NDK link;
- * Kotlin path-map works without .so (isAvailable = true when module registered).
+ * Optional C sources under native/aib-native-accel are copied for future NDK link.
  */
 const { withMainApplication, withDangerousMod } = require("@expo/config-plugins");
 const fs = require("fs");
@@ -45,7 +44,11 @@ class AibNativeAccelModule(private val reactContext: ReactApplicationContext) :
 
   @ReactMethod
   fun isAvailable(promise: Promise) {
-    promise.resolve(true)
+    try {
+      promise.resolve(true)
+    } catch (e: Exception) {
+      promise.reject("AIB_ACCEL_AVAILABLE", e.message, e)
+    }
   }
 
   @ReactMethod
@@ -70,6 +73,10 @@ class AibNativeAccelModule(private val reactContext: ReactApplicationContext) :
   @ReactMethod
   fun mapPath(path: String, from: String, to: String, promise: Promise) {
     try {
+      if (path.isEmpty() || from.isEmpty()) {
+        promise.resolve(path)
+        return
+      }
       if (jniLoaded) {
         try {
           val cls = Class.forName("${pkg}.AibAccelNative")
@@ -80,7 +87,7 @@ class AibNativeAccelModule(private val reactContext: ReactApplicationContext) :
             return
           }
         } catch (_: Throwable) {
-          /* fall through */
+          /* fall through to Kotlin impl */
         }
       }
       promise.resolve(kotlinMapPath(path, from, to))
@@ -92,7 +99,10 @@ class AibNativeAccelModule(private val reactContext: ReactApplicationContext) :
   @ReactMethod
   fun exec(command: String, promise: Promise) {
     try {
-      // Map common Termux-style prefixes inside command tokens (best-effort)
+      if (command.isBlank()) {
+        promise.reject("AIB_ACCEL_EXEC", "command cannot be empty")
+        return
+      }
       val mapped = command
         .replace("/data/data/com.termux/files/home", reactContext.filesDir.absolutePath)
       val pb = ProcessBuilder("sh", "-c", mapped)
@@ -144,8 +154,6 @@ class AibNativeAccelPackage : ReactPackage {
 
 /** Optional JNI helper class (loaded only if libaibaccel.so present). */
 function jniHelperJava(pkg) {
-  // String concat (not template) so package line ALWAYS ends with ';' for javac.
-  // Never emit Kotlin-style "package x" without semicolon into a .java file.
   const safePkg = String(pkg || "com.sakana.aibuilder").replace(/[^a-zA-Z0-9_.]/g, "");
   return (
     "package " + safePkg + ";\n" +
@@ -163,84 +171,99 @@ function withAibNativeAccel(config) {
   config = withDangerousMod(config, [
     "android",
     async (config) => {
-      const projectRoot = config.modRequest.projectRoot;
-      const pkg =
-        config.android?.package ||
-        config.android?.packageName ||
-        "com.anonymous.aibuilder";
-      const pkgPath = pkg.replace(/\./g, "/");
-      const srcDir = path.join(
-        config.modRequest.platformProjectRoot,
-        "app/src/main/java",
-        pkgPath,
-      );
-      fs.mkdirSync(srcDir, { recursive: true });
-      fs.writeFileSync(path.join(srcDir, "AibNativeAccelModule.kt"), moduleKotlin(pkg));
-      fs.writeFileSync(path.join(srcDir, "AibNativeAccelPackage.kt"), packageKotlin(pkg));
+      try {
+        const projectRoot = config.modRequest.projectRoot;
+        const pkg =
+          config.android?.package ||
+          config.android?.packageName ||
+          "com.sakana.aibuilder";
+        const pkgPath = pkg.replace(/\./g, "/");
+        const srcDir = path.join(
+          config.modRequest.platformProjectRoot,
+          "app/src/main/java",
+          pkgPath,
+        );
+        fs.mkdirSync(srcDir, { recursive: true });
+        fs.writeFileSync(path.join(srcDir, "AibNativeAccelModule.kt"), moduleKotlin(pkg), "utf8");
+        fs.writeFileSync(path.join(srcDir, "AibNativeAccelPackage.kt"), packageKotlin(pkg), "utf8");
 
-      // Optional JNI Java class (same package as app modules) + copy C sources for manual/NDK builds
-      // Bulletproof: remove any stale .java that might contain Kotlin-style package (no semicolon).
-      const accelJavaPath = path.join(srcDir, "AibAccelNative.java");
-      try { if (fs.existsSync(accelJavaPath)) fs.unlinkSync(accelJavaPath); } catch (_) {}
-      const accelJavaSrc = jniHelperJava(pkg);
-      if (!/^package\s+[\w.]+\s*;/.test(accelJavaSrc.split("\n")[0] || "")) {
-        throw new Error("[withAibNativeAccel] generated AibAccelNative.java missing package ...; — refusing write");
-      }
-      fs.writeFileSync(accelJavaPath, accelJavaSrc, "utf8");
-      // Also remove legacy hardcoded path from older plugin versions
-      const legacyAccel = path.join(
-        config.modRequest.platformProjectRoot,
-        "app/src/main/java/com/aibuilder/accel/AibAccelNative.java",
-      );
-      try { if (fs.existsSync(legacyAccel)) fs.unlinkSync(legacyAccel); } catch (_) {}
-
-      const nativeSrc = path.join(projectRoot, "native/aib-native-accel/src");
-      const jniOut = path.join(
-        config.modRequest.platformProjectRoot,
-        "app/src/main/jni/aibaccel",
-      );
-      if (fs.existsSync(nativeSrc)) {
-        fs.mkdirSync(jniOut, { recursive: true });
-        for (const f of fs.readdirSync(nativeSrc)) {
-          fs.copyFileSync(path.join(nativeSrc, f), path.join(jniOut, f));
+        const accelJavaPath = path.join(srcDir, "AibAccelNative.java");
+        try {
+          if (fs.existsSync(accelJavaPath)) fs.unlinkSync(accelJavaPath);
+        } catch (_) {}
+        const accelJavaSrc = jniHelperJava(pkg);
+        if (!/^package\s+[\w.]+\s*;/.test(accelJavaSrc.split("\n")[0] || "")) {
+          throw new Error("[withAibNativeAccel] generated AibAccelNative.java missing package ...;");
         }
-        fs.writeFileSync(
-          path.join(jniOut, "CMakeLists.txt"),
-          `cmake_minimum_required(VERSION 3.18)
+        fs.writeFileSync(accelJavaPath, accelJavaSrc, "utf8");
+
+        const legacyAccel = path.join(
+          config.modRequest.platformProjectRoot,
+          "app/src/main/java/com/aibuilder/accel/AibAccelNative.java",
+        );
+        try {
+          if (fs.existsSync(legacyAccel)) fs.unlinkSync(legacyAccel);
+        } catch (_) {}
+
+        const nativeSrc = path.join(projectRoot, "native/aib-native-accel/src");
+        if (fs.existsSync(nativeSrc)) {
+          const jniOut = path.join(
+            config.modRequest.platformProjectRoot,
+            "app/src/main/jni/aibaccel",
+          );
+          fs.mkdirSync(jniOut, { recursive: true });
+          for (const f of fs.readdirSync(nativeSrc)) {
+            fs.copyFileSync(path.join(nativeSrc, f), path.join(jniOut, f));
+          }
+          fs.writeFileSync(
+            path.join(jniOut, "CMakeLists.txt"),
+            `cmake_minimum_required(VERSION 3.18)
 project(aibaccel)
 add_library(aibaccel SHARED aib_accel.c aib_accel_jni.c)
 target_include_directories(aibaccel PRIVATE \${CMAKE_CURRENT_SOURCE_DIR})
 find_library(log-lib log)
 target_link_libraries(aibaccel \${log-lib})
 `,
-        );
+            "utf8"
+          );
+        }
+      } catch (e) {
+        console.warn(`[withAibNativeAccel] Warning creating native module: ${e.message}`);
       }
       return config;
     },
   ]);
 
   config = withMainApplication(config, (config) => {
-    let c = config.modResults.contents;
-    if (c.includes("AibNativeAccelPackage()")) return config;
-    const isKotlin = config.modResults.language === "kt";
-    if (isKotlin) {
-      const marker = "PackageList(this).packages.apply {";
-      if (c.includes(marker)) {
-        c = c.replace(marker, marker + "\n              add(AibNativeAccelPackage())");
-      } else if (c.includes("val packages = PackageList(this).packages")) {
-        c = c.replace(
-          "val packages = PackageList(this).packages",
-          "val packages = PackageList(this).packages\n            packages.add(AibNativeAccelPackage())",
-        );
+    try {
+      let c = config.modResults.contents;
+      if (c.includes("AibNativeAccelPackage()")) return config;
+      const isKotlin = config.modResults.language === "kt";
+      if (isKotlin) {
+        const marker = "PackageList(this).packages.apply {";
+        if (c.includes(marker)) {
+          c = c.replace(marker, marker + "\n              add(AibNativeAccelPackage())");
+        } else if (c.includes("val packages = PackageList(this).packages")) {
+          c = c.replace(
+            "val packages = PackageList(this).packages",
+            "val packages = PackageList(this).packages\n            packages.add(AibNativeAccelPackage())",
+          );
+        } else {
+          console.warn("[withAibNativeAccel] Kotlin MainApplication package list not found");
+          return config;
+        }
       } else {
-        throw new Error("[withAibNativeAccel] MainApplication package list not found");
+        const marker = "List<ReactPackage> packages = new PackageList(this).getPackages();";
+        if (!c.includes(marker)) {
+          console.warn("[withAibNativeAccel] Java package list not found");
+          return config;
+        }
+        c = c.replace(marker, marker + "\n      packages.add(new AibNativeAccelPackage());");
       }
-    } else {
-      const marker = "List<ReactPackage> packages = new PackageList(this).getPackages();";
-      if (!c.includes(marker)) throw new Error("[withAibNativeAccel] Java package list not found");
-      c = c.replace(marker, marker + "\n      packages.add(new AibNativeAccelPackage());");
+      config.modResults.contents = c;
+    } catch (e) {
+      console.warn(`[withAibNativeAccel] Warning updating MainApplication: ${e.message}`);
     }
-    config.modResults.contents = c;
     return config;
   });
 
