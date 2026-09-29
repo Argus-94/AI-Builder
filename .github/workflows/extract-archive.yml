@@ -1,0 +1,25 @@
+name: Extract Archive
+
+on:
+  workflow_dispatch:
+
+jobs:
+  extract:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Extract ZIP archive
+        run: |
+          unzip -q AIBuilder-Expo-v179.zip -d extracted_content
+          ls -la extracted_content/
+
+      - name: Commit extracted files
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          git add extracted_content/
+          git commit -m "Extract AIBuilder-Expo-v179.zip archive" || echo "No changes to commit"
+          git push
