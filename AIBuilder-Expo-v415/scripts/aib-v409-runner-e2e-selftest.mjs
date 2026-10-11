@@ -1,0 +1,27 @@
+// v409: real project runner + engine-wrapped command executed by real bash (tools stubbed). Not a real Gradle build.
+import assert from "node:assert/strict";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { spawnSync } from "node:child_process";
+import { wrapWithAutobuild, parseAutobuildResult } from "../lib/autobuild.ts";
+import { buildProjectBuildRunnerContent } from "../lib/project-build-runner.ts";
+const root = fs.mkdtempSync(path.join(os.tmpdir(), "aib-e2e-"));
+const home = path.join(root, "home"), shared = path.join(root, "shared"), proj = path.join(shared, "projects", "demo");
+const stubs = path.join(root, "stubs");
+for (const d of [home, proj, stubs, path.join(root, "jdk/bin"), path.join(home, "android-sdk/cmdline-tools/latest/bin")]) fs.mkdirSync(d, { recursive: true });
+const w = (f, b) => fs.writeFileSync(f, b, { mode: 0o755 });
+w(path.join(root, "jdk/bin/java"), "#!/bin/bash\necho 'openjdk version \"17.0.9\"' >&2\n");
+w(path.join(home, "android-sdk/cmdline-tools/latest/bin/sdkmanager"), `#!/bin/bash\necho "sdkmanager $*" >> ${root}/calls.log\nexit 0\n`);
+for (const t of ["curl", "unzip", "git", "apt-get"]) w(path.join(stubs, t), "#!/bin/bash\nexit 0\n");
+const primary = `n=$(cat ${root}/n 2>/dev/null || echo 0); n=$((n+1)); echo $n > ${root}/n\nif [ $n -eq 1 ]; then echo SDK_PLATFORM_MISSING; exit 1; fi\necho APK_PATH=${proj}/app-debug.apk`;
+const command = wrapWithAutobuild({ backend: "termux", projectKind: "gradle", primaryCommand: primary });
+const runner = buildProjectBuildRunnerContent({ projectRoot: proj, projectName: "demo", projectKind: "gradle", backend: "termux", variant: "assembleDebug", command, sharedRoot: shared });
+fs.writeFileSync(path.join(proj, "build-apk-demo.sh"), runner);
+const r = spawnSync("bash", [path.join(proj, "build-apk-demo.sh")], { encoding: "utf8", timeout: 90000, env: { PATH: `${stubs}:/usr/bin:/bin`, HOME: home, JAVA_HOME: path.join(root, "jdk"), AIB_PRIVATE_ROOT: path.join(root, "priv"), ANDROID_HOME: path.join(home, "android-sdk") } });
+const out = r.stdout + r.stderr;
+const res = parseAutobuildResult(out);
+assert.equal(r.status, 0, out.slice(-1500));
+assert.ok(res?.ok && res.attempts === 2, out.slice(-1500));
+fs.rmSync(root, { recursive: true, force: true });
+console.log("AIB_V409_RUNNER_E2E_SELFTEST_OK runner=real engine=wrapped first-attempt=SDK_PLATFORM_MISSING second-attempt=ok real-gradle=not-run");
